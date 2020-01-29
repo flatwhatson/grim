@@ -2,8 +2,8 @@
 
 cd $(dirname $(readlink -f $0))
 
-rm -rf build
-mkdir build
+[[ $1 == "clean" ]] && rm -rf build
+mkdir -p build
 cd build
 
 cmake .. -G Ninja

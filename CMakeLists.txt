@@ -46,11 +46,17 @@ find_package(OpenGL REQUIRED)
 
 set(imgui_dir "${CMAKE_SOURCE_DIR}/external/imgui")
 file(GLOB imgui_sources "${imgui_dir}/*.cpp")
-list(APPEND imgui_sources "${imgui_dir}/examples/imgui_impl_sdl.cpp")
-list(APPEND imgui_sources "${imgui_dir}/examples/imgui_impl_opengl3.cpp")
+list(APPEND imgui_sources
+  "${imgui_dir}/examples/imgui_impl_sdl.cpp"
+  "${imgui_dir}/examples/imgui_impl_opengl3.cpp"
+  "${imgui_dir}/misc/cpp/imgui_stdlib.cpp")
+set(imgui_includes
+  "${imgui_dir}"
+  "${imgui_dir}/examples"
+  "${imgui_dir}/misc/cpp")
 
 add_library(imgui STATIC ${imgui_sources})
-target_include_directories(imgui PUBLIC ${imgui_dir})
+target_include_directories(imgui PUBLIC ${imgui_includes})
 target_link_libraries(imgui PkgConfig::SDL2 OpenGL::GL)
 
 ########################################
