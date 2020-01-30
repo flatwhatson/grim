@@ -38,7 +38,7 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS on)
 
 find_package(PkgConfig REQUIRED)
 pkg_search_module(SDL2 REQUIRED IMPORTED_TARGET sdl2)
-pkg_search_module(Guile REQUIRED IMPORTED_TARGET guile-3.0)
+pkg_search_module(Guile REQUIRED IMPORTED_TARGET guile-3.0 guile-2.2 guile-2.0)
 
 find_package(GLEW REQUIRED)
 set(OpenGL_GL_PREFERENCE GLVND)

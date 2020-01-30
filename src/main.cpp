@@ -8,8 +8,10 @@
 #include <libguile.h>
 
 #include <cstdio>
-#include <memory>
 #include <deque>
+#include <functional>
+#include <string>
+#include <string_view>
 
 static const int gl_major_version = 3;
 static const int gl_minor_version = 0;
@@ -20,33 +22,23 @@ static const int window_width = 1280;
 static const int window_height = 720;
 
 static const ImVec4 background_color = { 0.45f, 0.55f, 0.60f, 1.00f };
-static const ImVec4 input_color = { 0xcc/255.0f, 0x66/255.0f, 0x66/255.0f, 1.00f };
-static const ImVec4 output_color = { 0xb5/255.0f, 0xbd/255.0f, 0x68/255.0f, 1.00f };
+static const ImVec4 error_color = ImColor(0xcc, 0x66, 0x66);
+static const ImVec4 output_color = ImColor(0xb5, 0xbd, 0x68);
 
 ////////////////////////////////////////
-
-struct free_deleter {
-  template<class T>
-  void operator()(T* ptr) {
-    std::free(ptr);
-  }
-};
-
-template<class T>
-using unique_c_ptr = std::unique_ptr<T, free_deleter>;
-using unique_c_str = unique_c_ptr<char>;
 
 enum class entry_type {
   input,
   output,
+  error,
 };
 
 struct entry {
-  entry(entry_type type, unique_c_str&& text)
+  entry(entry_type type, std::string&& text)
       : type(type), text(std::move(text)) {}
 
   entry_type type;
-  unique_c_str text;
+  std::string text;
 };
 
 static std::deque<entry> history;
@@ -54,28 +46,64 @@ static std::string user_input;
 
 ////////////////////////////////////////
 
-SCM grim_scm_read(const char* input) {
-  SCM string = scm_from_locale_string(input);
+using grim_scm_t_thunk   = std::function<void()>;
+using grim_scm_t_handler = std::function<void(SCM, SCM)>;
+
+SCM grim_scm_wrap_thunk(void* data) {
+  (*static_cast<grim_scm_t_thunk*>(data))();
+  return SCM_UNSPECIFIED;
+}
+
+SCM grim_scm_wrap_handler(void* data, SCM tag, SCM args) {
+  (*static_cast<grim_scm_t_handler*>(data))(tag, args);
+  return SCM_UNSPECIFIED;
+}
+
+SCM grim_scm_try_catch(const grim_scm_t_thunk& thunk, const grim_scm_t_handler& handler) {
+  return scm_c_catch(SCM_BOOL_T,
+      grim_scm_wrap_thunk, const_cast<void*>(static_cast<const void*>(&thunk)),
+      grim_scm_wrap_handler, const_cast<void*>(static_cast<const void*>(&handler)),
+      nullptr, nullptr);
+}
+
+std::string grim_scm_get_output_string(SCM port) {
+  SCM string = scm_get_output_string(port);
+  scm_close_output_port(port);
+  auto outptr = scm_to_locale_string(string);
+  auto outstr = std::string(outptr);
+  free(outptr);
+  return outstr;
+}
+
+SCM grim_scm_read(std::string_view input) {
+  SCM string = scm_from_locale_stringn(input.data(), input.size());
   SCM port = scm_open_input_string(string);
   SCM expr = scm_read(port);
   scm_close_input_port(port);
   return expr;
 }
 
-unique_c_str grim_scm_write(SCM expr) {
+std::string grim_scm_write(SCM expr) {
   SCM port = scm_open_output_string();
   scm_write(expr, port);
-  SCM string = scm_get_output_string(port);
-  scm_close_output_port(port);
-  char* output = scm_to_locale_string(string);
-  return unique_c_str(output);
+  return grim_scm_get_output_string(port);
 }
 
-void grim_scm_eval(const char* input) {
-  SCM expr = grim_scm_read(input);
-  history.emplace_back(entry_type::input, grim_scm_write(expr));
-  SCM result = scm_eval(expr, scm_current_module());
-  history.emplace_back(entry_type::output, grim_scm_write(result));
+std::string grim_scm_print_exception(SCM tag, SCM args) {
+  SCM port = scm_open_output_string();
+  scm_print_exception(port, SCM_BOOL_F, tag, args);
+  return grim_scm_get_output_string(port);
+}
+
+void grim_scm_eval(std::string_view input) {
+  history.emplace_back(entry_type::input, std::string(input));
+  grim_scm_try_catch([&] {
+    SCM expr = grim_scm_read(input);
+    SCM result = scm_eval(expr, scm_current_module());
+    history.emplace_back(entry_type::output, grim_scm_write(result));
+  }, [&](SCM tag, SCM args) {
+    history.emplace_back(entry_type::error, grim_scm_print_exception(tag, args));
+  });
 }
 
 ////////////////////////////////////////
@@ -85,23 +113,57 @@ void init_scheme() {
 }
 
 void run_frame() {
-  ImGui::Begin("Hello, scheme!");
+  ImGui::SetNextWindowSize(ImVec2(520, 600), ImGuiCond_FirstUseEver);
+  ImGui::Begin("Scheme Console");
+
+  const float footer_height = ImGui::GetStyle().ItemSpacing.y + ImGui::GetFrameHeightWithSpacing();
+  ImGui::BeginChild("History", ImVec2(0, -footer_height), false, ImGuiWindowFlags_HorizontalScrollbar);
+  ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(4, 1));
 
   for (auto& entry : history) {
+    const ImVec4* color = nullptr;
+    const char* format = nullptr;
+
     switch (entry.type) {
       case entry_type::input:
-        ImGui::TextColored(input_color, "%s", entry.text.get());
         break;
       case entry_type::output:
-        ImGui::TextColored(output_color, "%s", entry.text.get());
+        color = &output_color;
+        break;
+      case entry_type::error:
+        color = &error_color;
         break;
     }
+
+    ImGui::PushTextWrapPos();
+    if (color)
+      ImGui::PushStyleColor(ImGuiCol_Text, *color);
+
+    if (format) {
+      ImGui::Text(format, entry.text.c_str());
+    } else {
+      ImGui::TextUnformatted(entry.text.data(), entry.text.data() + entry.text.size());
+    }
+
+    ImGui::PopTextWrapPos();
+    if (color)
+      ImGui::PopStyleColor();
   }
 
-  if (ImGui::InputText("<<<", &user_input, ImGuiInputTextFlags_EnterReturnsTrue)) {
-    grim_scm_eval(user_input.c_str());
+  ImGui::PopStyleVar();
+  ImGui::EndChild();
+  ImGui::Separator();
+
+  bool reclaim_focus = false;
+  if (ImGui::InputText("Input", &user_input, ImGuiInputTextFlags_EnterReturnsTrue)) {
+    grim_scm_eval(user_input);
     user_input.clear();
+    reclaim_focus = true;
   }
+
+  ImGui::SetItemDefaultFocus();
+  if (reclaim_focus)
+    ImGui::SetKeyboardFocusHere(-1);
 
   ImGui::End();
 }
